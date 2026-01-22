@@ -9,140 +9,104 @@ from telegram.ext import (
     filters
 )
 
-# ====== ENV ======
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 OWNER_ID_RAW = os.getenv("OWNER_ID")
 OWNER_ID = int(OWNER_ID_RAW) if OWNER_ID_RAW and OWNER_ID_RAW.isdigit() else None
 
 if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN chưa được cấu hình")
+    raise RuntimeError("BOT_TOKEN missing")
 
-# ====== MENU ======
 MAIN_MENU = ReplyKeyboardMarkup(
-    [
-        ["🧮 Máy tính", "📄 Xem bill"],
-        ["❌ Đóng"]
-    ],
+    [["🧮 Máy tính", "📄 Xem bill"], ["❌ Đóng"]],
     resize_keyboard=True
 )
 
 CALC_MENU = ReplyKeyboardMarkup(
-    [
-        ["🔢 Tỷ giá", "💸 Phí %"],
-        ["⬅️ Quay lại"]
-    ],
+    [["🔢 Nhập giao dịch", "💸 Phí %"], ["⬅️ Quay lại"]],
     resize_keyboard=True
 )
 
-# ====== DATA TEMP ======
-USER_DATA = {}
+DATA = {}
 
-# ====== HANDLERS ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Bot Bill đang hoạt động\nChọn chức năng:",
-        reply_markup=MAIN_MENU
-    )
+    await update.message.reply_text("Bot Bill sẵn sàng", reply_markup=MAIN_MENU)
 
-async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
+    text = update.message.text.strip()
 
     if text == "🧮 Máy tính":
-        USER_DATA[uid] = {"rows": [], "fee": 0}
-        await update.message.reply_text(
-            "📌 Nhập giao dịch theo dạng:\n`SỐ TIỀN / TỶ GIÁ`\nVí dụ: `300000 / 27.55`",
-            reply_markup=CALC_MENU
-        )
+        DATA[uid] = {"rows": [], "fee": 0}
+        await update.message.reply_text("Nhập: số / tỷ giá", reply_markup=CALC_MENU)
 
     elif text == "💸 Phí %":
-        await update.message.reply_text("Nhập phí % (ví dụ: 6)")
-
-    elif text == "🔢 Tỷ giá":
-        await update.message.reply_text("Nhập giao dịch: `SỐ / TỶ GIÁ`")
+        await update.message.reply_text("Nhập phí %")
 
     elif text == "📄 Xem bill":
         await show_bill(update, context)
 
     elif text == "⬅️ Quay lại":
-        await update.message.reply_text("Quay lại menu chính", reply_markup=MAIN_MENU)
+        await update.message.reply_text("Menu chính", reply_markup=MAIN_MENU)
 
-    elif text == "❌ Đóng":
-        await update.message.reply_text("Đã đóng menu")
-
-    else:
+    elif uid in DATA:
         await handle_input(update, context)
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     text = update.message.text.strip()
 
-    if uid not in USER_DATA:
-        return
-
-    # PHÍ %
     if text.replace(".", "").isdigit():
-        USER_DATA[uid]["fee"] = float(text)
-        await update.message.reply_text(f"✅ Đã set phí {text}%")
+        DATA[uid]["fee"] = float(text)
+        await update.message.reply_text(f"Đã set phí {text}%")
         return
 
-    # GIAO DỊCH
     try:
         money, rate = text.split("/")
-        money = float(money.strip())
-        rate = float(rate.strip())
-        usdt = money / rate
-        USER_DATA[uid]["rows"].append(usdt)
-
-        await update.message.reply_text(
-            f"✔ Đã thêm: {money} / {rate} = {round(usdt,2)} USDT"
-        )
+        usdt = float(money) / float(rate)
+        DATA[uid]["rows"].append(usdt)
+        await update.message.reply_text(f"Đã thêm {round(usdt,2)} USDT")
     except:
-        await update.message.reply_text("❌ Sai định dạng. Ví dụ: 300000 / 27.55")
+        await update.message.reply_text("Sai định dạng")
 
 async def show_bill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
-    data = USER_DATA.get(uid)
+    d = DATA.get(uid)
 
-    if not data or not data["rows"]:
-        await update.message.reply_text("❌ Chưa có dữ liệu")
+    if not d or not d["rows"]:
+        await update.message.reply_text("Chưa có dữ liệu")
         return
 
-    total = sum(data["rows"])
-    fee_percent = data.get("fee", 0)
-    fee_value = total * fee_percent / 100 if fee_percent else 0
+    total = sum(d["rows"])
+    fee = d["fee"]
+    fee_value = total * fee / 100
     balance = total - fee_value
 
-    now = datetime.now()
-    bill = [
-        "HÓA ĐƠN\n",
-        f"Người tạo: {update.message.from_user.first_name}",
-        f"Thời gian: {now.strftime('%d/%m/%Y %H:%M')}\n"
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    msg = [
+        "HÓA ĐƠN",
+        f"Thời gian: {now}",
+        ""
     ]
 
-    for i, v in enumerate(data["rows"], 1):
-        bill.append(f"Giao dịch {i}: {round(v,2)} USDT")
+    for i, v in enumerate(d["rows"], 1):
+        msg.append(f"Giao dịch {i}: {round(v,2)} USDT")
 
-    if fee_percent:
-        bill.append(f"\nPhí: {fee_percent}% ({round(fee_value,2)} USDT)")
+    if fee:
+        msg.append(f"Phí: {fee}% ({round(fee_value,2)} USDT)")
 
-    bill.extend([
-        "—————————————",
-        f"Tổng thu: {round(total,2)} USDT",
+    msg += [
+        "----------------",
+        f"Tổng: {round(total,2)} USDT",
         f"Số dư: {round(balance,2)} USDT"
-    ])
+    ]
 
-    await update.message.reply_text("\n".join(bill))
+    await update.message.reply_text("\n".join(msg))
 
-# ====== MAIN ======
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
-
-    print("🤖 Bot đang chạy...")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     app.run_polling()
 
 if __name__ == "__main__":
