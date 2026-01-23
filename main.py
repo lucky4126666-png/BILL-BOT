@@ -16,8 +16,8 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "TOKEN_THẬT_CỦA_BẠN"
-SUPER_ADMINS = {123456789}   # 👈 ID CHỦ BOT
+BOT_TOKEN = os.getenv("BOT_TOKEN") or "7993054192:AAEMYvFa_WG-_XuT4RkeW_qUNtVO-P-vy_c"
+SUPER_ADMINS = {8572604188}   # 👈 ID CHỦ BOT
 GROUP_ADMINS = {}            # admin theo group
 groups = {}
 
