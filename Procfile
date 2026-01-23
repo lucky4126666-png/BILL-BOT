@@ -1,4 +1,3 @@
-worker: python main.py
 import os
 from datetime import datetime, timezone, timedelta
 from telegram import (
