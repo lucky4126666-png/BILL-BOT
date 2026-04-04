@@ -1,0 +1,65 @@
+async def admin_page(request):
+    if not check_login(request):
+        raise web.HTTPFound("/login")
+
+    html = f"""
+    <html>
+    <head>
+    <title>Dashboard</title>
+    <style>
+    body {{
+        background:#0f172a;
+        color:white;
+        font-family:sans-serif;
+    }}
+    .card {{
+        background:#1e293b;
+        padding:20px;
+        margin:10px;
+        border-radius:10px;
+    }}
+    input, textarea {{
+        width:100%;
+        padding:10px;
+        margin:5px 0;
+        border-radius:6px;
+        border:none;
+    }}
+    button {{
+        padding:10px;
+        background:#22c55e;
+        border:none;
+        border-radius:6px;
+        color:white;
+        cursor:pointer;
+    }}
+    </style>
+    </head>
+
+    <body>
+
+    <h1>🚀 BOT DASHBOARD</h1>
+
+    <div class="card">
+        <h3>📅 Schedule ({len(schedules)})</h3>
+        {''.join([f"<p>{s.get('time')} | {s.get('text')} <a href='/del_schedule?id={s.get('id')}'>❌</a></p>" for s in schedules])}
+    </div>
+
+    <div class="card">
+        <h3>➕ Tạo Schedule</h3>
+        <form action="/add_schedule">
+        <input name="chat_id" placeholder="Chat ID"><br>
+        <input name="time" placeholder="HH:MM"><br>
+        <input name="interval" placeholder="Interval phút"><br>
+        <input name="text" placeholder="Nội dung"><br>
+        <input name="image" placeholder="file_id"><br>
+        <textarea name="button" placeholder="Text|Link"></textarea><br>
+        <label>Lặp</label><input type="checkbox" name="repeat"><br>
+        <button>Tạo</button>
+        </form>
+    </div>
+
+    </body>
+    </html>
+    """
+    return web.Response(text=html, content_type="text/html")
