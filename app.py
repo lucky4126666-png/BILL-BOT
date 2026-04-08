@@ -4,7 +4,6 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-import redis
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
