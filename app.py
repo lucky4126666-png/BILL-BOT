@@ -1,271 +1,228 @@
-import os, json, asyncio, uuid
-from datetime import datetime, timezone, timedelta
-from aiohttp import web
+import os
+import re
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.client.default import DefaultBotProperties
+from dotenv import load_dotenv
+import uvicorn
 
-# ===== CONFIG =====
+from db import init_db, get_setting, set_setting
+from ai_service import ask_ai
+
+# ===== LOAD ENV =====
+load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", "123456789"))
-API_KEY = os.getenv("API_KEY", "secret123")
+BASE_URL = os.getenv("BASE_URL")
+PORT = int(os.getenv("PORT", 8080))
 
-ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "123456")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-r = redis.from_url(REDIS_URL, decode_responses=True)
-
-# ===== FILE =====
-DATA_FILE = "data.json"
-SCHEDULE_FILE = "schedule.json"
-
-# ===== LOAD SAVE =====
-def load_json(file, default):
-    try:
-        if not os.path.exists(file): return default
-        with open(file) as f: return json.load(f)
-    except:
-        return default
-
-def save_json(file, data):
-    try:
-        with open(file,"w") as f: json.dump(data,f)
-    except: pass
-
-keywords = load_json(DATA_FILE, {})
-schedules = load_json(SCHEDULE_FILE, [])
-
-# ===== TIME =====
-def get_now():
-    return datetime.now(timezone.utc).astimezone(
-        timezone(timedelta(hours=7))
-    )
-
-# ===== SECURITY =====
-def check_api(request):
-    return request.headers.get("x-api-key") == API_KEY
-
-# ===== BUTTON =====
-def build_buttons(text):
-    if not text: return None
-    rows, row = [], []
-    for line in text.split("\n"):
-        if "|" not in line: continue
-        try:
-            name,url=line.split("|",1)
-            row.append(InlineKeyboardButton(text=name.strip(),url=url.strip()))
-            if len(row)==2:
-                rows.append(row); row=[]
-        except: continue
-    if row: rows.append(row)
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-# ===== STATS =====
-stats = {"sent":0,"error":0}
-
-# ===== QUEUE =====
-def push_queue(job):
-    try:
-        r.lpush("bot_queue", json.dumps(job))
-    except:
-        print("REDIS ERROR")
-
-# ===== SEND =====
-async def send_job(job):
-    try:
-        markup = build_buttons(job.get("button"))
-        text = str(job.get("text") or "")
-
-        if job.get("image"):
-            await bot.send_photo(job["chat_id"], job["image"], caption=text, reply_markup=markup)
-        else:
-            await bot.send_message(job["chat_id"], text, reply_markup=markup)
-
-        stats["sent"] += 1
-
-    except Exception as e:
-        stats["error"] += 1
-        print("SEND ERROR:", e)
-
-# ===== WORKER =====
-async def worker():
-    while True:
-        try:
-            data = r.brpop("bot_queue", timeout=5)
-
-            if not data:
-                await asyncio.sleep(1)
-                continue
-
-            job = json.loads(data[1])
-            await send_job(job)
-
-            await asyncio.sleep(0.05)
-
-        except Exception as e:
-            print("WORKER ERROR:", e)
-            await asyncio.sleep(1)
+# ===== CREATE FASTAPI (PHẢI Ở TRƯỚC) =====
+app = FastAPI()
 
 # ===== BOT =====
-@dp.message(Command("start"))
-async def start(m: types.Message):
-    if m.from_user.id != OWNER_ID: return
-    await m.answer("🚀 BOT READY")
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(link_preview_is_disabled=True)
+)
 
+dp = Dispatcher(storage=MemoryStorage())
+init_db()
+
+# ================= DASHBOARD =================
+@app.get("/admin", response_class=HTMLResponse)
+def admin():
+    return open("dashboard.html", encoding="utf-8").read()
+
+@app.post("/admin/set")
+async def set_text(data: dict):
+    set_setting("start_text", data["text"])
+    return {"ok": True}
+
+@app.get("/admin/get")
+async def get_text():
+    return {"text": get_setting("start_text")}
+
+# ================= START =================
+@dp.my_chat_member()
+async def bot_join(e: types.ChatMemberUpdated):
+    if e.new_chat_member.status in ("member", "administrator"):
+        chat_id = e.chat.id
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="公群导航", url="https://t.me/xbkf"),
+            InlineKeyboardButton(text="供需频道", url="https://t.me/xbkf")
+        ]])
+
+        await bot.send_message(
+            chat_id,
+            "N组防骗助手为您服务,我正在进行相关初始化配置请稍后",
+            reply_markup=kb
+        )
+
+        admins = await bot.get_chat_administrators(chat_id)
+
+        real_admin_found = False
+        unknown_admins = []
+
+        for a in admins:
+            uid = a.user.id
+
+            if uid in ADMIN_IDS:
+                real_admin_found = True
+            else:
+                # lọc admin lạ
+                if a.status in ["administrator", "creator"]:
+                    unknown_admins.append(a.user.full_name)
+
+        # ❌ không có admin thật
+        if not real_admin_found:
+            await bot.send_message(
+                chat_id,
+                "⚠️ 风险提示，本群没有检测到新币管理员。\n"
+                "有交易风险，请联系 @xbkf"
+            )
+
+        # ⚠️ có admin lạ
+        if unknown_admins:
+            await bot.send_message(
+                chat_id,
+                "⚠️ 检测到未知管理员：\n" + "\n".join(unknown_admins)
+            )
+
+# ================= USER JOIN =================
+@dp.message(lambda m: m.new_chat_members)
+async def welcome(m: types.Message):
+    chat = m.chat
+    group_name = chat.title or "本群"
+
+    for u in m.new_chat_members:
+        name = u.full_name
+
+        text = (
+            f"欢迎 {name} 来到\n"
+            f"{group_name}\n\n"
+            "交易前请先关注，担保流程【 @xinb 】\n\n"
+            "1.交易前认准群老板和业务员头衔，先看清楚置顶的群规则和报备模版；\n"
+            "2.交易前群老板方必须在公群内进行报备，客户确认报备内容，如客户没确认此报备视为无效报备；\n"
+            "3.交易过程中有任何变动需要在群内保留记录或者重新报备；\n"
+            "4.有任何问题可以联系新币24小时客服 @xbkf\n\n"
+            "⚠️注意：主动私聊你的都是骗子！\n"
+            "新币所有群（纠纷群、作业群、公群、专群）都由新币担保靓号拉群，\n"
+            "一切交易必须群内进行,切勿私下交易,请按照担保流程进行交易。\n\n"
+            "此用户是新币尊贵的VIP成员"
+        )
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="新币供需", url="https://t.me/xbkf"),
+                InlineKeyboardButton(text="新币公群", url="https://t.me/xbkf")
+            ]
+        ])
+
+        await m.answer(text, reply_markup=kb)
+
+@dp.message(lambda m: m.text in ["/open", "上课"])
+async def open_group(m: types.Message):
+    if m.from_user.id != SUPER_ADMIN:
+        return
+
+    # mở chat
+    await bot.set_chat_permissions(
+        m.chat.id,
+        permissions=types.ChatPermissions(
+            can_send_messages=True
+        )
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="新币供需", url="https://t.me/xbkf"),
+            InlineKeyboardButton(text="新币公群", url="https://t.me/xbkf")
+        ]
+    ])
+
+    text = (
+        "本群已开启发言，群内可以正常作业\n"
+        "认准群老板头衔 切勿私下交易。"
+    )
+
+    await m.answer(text, reply_markup=kb)
+
+@dp.message(lambda m: m.text in ["/lock", "下课"])
+async def close_group(m: types.Message):
+    if m.from_user.id != SUPER_ADMIN:
+        return
+
+    # khoá chat
+    await bot.set_chat_permissions(
+        m.chat.id,
+        permissions=types.ChatPermissions(
+            can_send_messages=False
+        )
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="新币供需", url="https://t.me/xbkf"),
+            InlineKeyboardButton(text="新币公群", url="https://t.me/xbkf")
+        ]
+    ])
+
+    text = (
+        "本公群已下课关闭发言\n"
+        "如需交易，请在该群恢复营业后在群内交易！\n"
+        "切勿私下交易！！"
+    )
+
+    await m.answer(text, reply_markup=kb)
+# ================= ANTI SCAM =================
 @dp.message()
-async def handle(m: types.Message):
-    text = (m.text or "").lower()
+async def anti(m: types.Message):
+    if not m.text:
+        return
 
-    if text in keywords:
-        push_queue({
-            "chat_id": m.chat.id,
-            **keywords[text]
-        })
-    else:
-        await m.answer("⚠️ Không có dữ liệu")
+    text = m.text.lower()
 
-# ===== SCHEDULER =====
-last_sent = {}
-
-async def scheduler():
-    while True:
-        now_dt = get_now()
-        now = now_dt.strftime("%H:%M")
-
-        for job in list(schedules):
-            try:
-                jid = job.get("id") or str(uuid.uuid4())
-                job["id"] = jid
-
-                if last_sent.get(jid) == now:
-                    continue
-
-                interval = job.get("interval") or 0
-
-                if interval:
-                    if now_dt.minute % int(interval) != 0:
-                        continue
-                else:
-                    if job.get("time") != now:
-                        continue
-
-                push_queue(job)
-                last_sent[jid] = now
-
-                if not job.get("repeat") and not interval:
-                    schedules.remove(job)
-
-            except Exception as e:
-                print("SCHEDULE ERROR:", e)
-
-        if len(last_sent) > 5000:
-            last_sent.clear()
-
-        save_json(SCHEDULE_FILE, schedules)
-        await asyncio.sleep(30)
-
-async def safe_scheduler():
-    while True:
+    if re.search(r"(http|t.me|www|\.com)", text):
         try:
-            await scheduler()
-        except Exception as e:
-            print("CRASH:", e)
-            await asyncio.sleep(5)
+            await m.delete()
+        except:
+            pass
 
-# ===== API =====
-async def api_add_keyword(request):
-    if not check_api(request):
-        return web.json_response({"error":"no auth"})
-    data = await request.json()
-    keywords[data["key"]] = data
-    save_json(DATA_FILE, keywords)
-    return web.json_response({"status":"ok"})
+# ================= AI =================
+@dp.message()
+async def ai(m: types.Message):
+    if not m.text:
+        return
 
-async def api_list_keyword(request):
-    return web.json_response(keywords)
+    if m.chat.type != "private" and "ai" not in m.text.lower():
+        return
 
-async def api_add_schedule(request):
-    if not check_api(request):
-        return web.json_response({"error":"no auth"})
+    reply = await ask_ai(m.from_user.id, m.text.replace("ai ", ""))
+    await m.reply(reply)
 
-    data = await request.json()
-
-    job = {
-        "id": str(uuid.uuid4()),
-        "chat_id": int(data["chat_id"]),
-        "text": data.get("text"),
-        "image": data.get("image"),
-        "button": data.get("button"),
-        "time": data.get("time"),
-        "interval": data.get("interval"),
-        "repeat": data.get("repeat", False)
-    }
-
-    schedules.append(job)
-    save_json(SCHEDULE_FILE, schedules)
-
-    return web.json_response(job)
-
-async def api_list_schedule(request):
-    return web.json_response(schedules)
-
-async def api_send(request):
-    if not check_api(request):
-        return web.json_response({"error":"no auth"})
-
-    data = await request.json()
-    push_queue(data)
-
-    return web.json_response({"status":"queued"})
-
-async def api_stats(request):
-    return web.json_response(stats)
-
-# ===== DASHBOARD =====
-async def admin_page(request):
-    html = f"""
-    <html><body style="background:#0f172a;color:white;font-family:sans-serif">
-
-    <h1>🚀 DASHBOARD</h1>
-
-    <h3>📊 Stats</h3>
-    <p>Sent: {stats["sent"]}</p>
-    <p>Error: {stats["error"]}</p>
-
-    <h3>📅 Schedule ({len(schedules)})</h3>
-    {''.join([f"<p>{s.get('time')} | {s.get('text')}</p>" for s in schedules])}
-
-    </body></html>
-    """
-    return web.Response(text=html, content_type="text/html")
-
-# ===== ROUTES =====
-app = web.Application()
-
-app.router.add_post("/api/keyword/add", api_add_keyword)
-app.router.add_get("/api/keyword/list", api_list_keyword)
-
-app.router.add_post("/api/schedule/add", api_add_schedule)
-app.router.add_get("/api/schedule/list", api_list_schedule)
-
-app.router.add_post("/api/send", api_send)
-app.router.add_get("/api/stats", api_stats)
-
-app.router.add_get("/admin", admin_page)
-
-# ===== START =====
-async def start_all(app):
+# ================= WEBHOOK =================
+@app.on_event("startup")
+async def start_app():
     await bot.delete_webhook(drop_pending_updates=True)
-    asyncio.create_task(dp.start_polling(bot))
-    asyncio.create_task(worker())
-    asyncio.create_task(safe_scheduler())
+    await bot.set_webhook(BASE_URL + "/webhook")
 
-app.on_startup.append(start_all)
+@app.post("/webhook")
+async def webhook(req: Request):
+    data = await req.json()
+    update = types.Update.model_validate(data)
+    await dp.feed_update(bot, update)
+    return {"ok": True}
 
+@app.get("/")
+def home():
+    return {"status": "running"}
+
+# ================= RUN =================
 if __name__ == "__main__":
-    web.run_app(app, port=int(os.getenv("PORT", 8080)))
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT)
